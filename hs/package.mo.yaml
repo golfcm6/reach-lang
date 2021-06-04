@@ -133,9 +133,10 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - reach
+    - neat-interpolation
     - shell-monad
     - unix
+    - reach
 
 tests:
   reach-test:
