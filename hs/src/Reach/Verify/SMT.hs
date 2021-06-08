@@ -34,6 +34,7 @@ import qualified SimpleSMT as SMT
 import System.Directory
 import System.Exit
 import System.IO
+import Reach.Verify.SMTAst
 
 --- SMT Helpers
 
@@ -92,75 +93,6 @@ smtNot se = smtApply "not" [se]
 
 --- SMT conversion code
 
-data SMTCat
-  = Witness
-  | Context
-  deriving (Eq, Show)
-
-instance Pretty SMTCat where
-  pretty = viaShow
-
-data SynthExpr
-  = SMTMapNew                           -- Context
-  | SMTMapFresh                         -- Witness
-  | SMTMapSet DLVar DLVar (Maybe DLArg) -- Context
-  | SMTMapRef DLVar DLVar               -- Context
-  deriving (Eq, Show)
-
-instance Pretty SynthExpr where
-  pretty = \case
-    SMTMapNew -> "new Map()"
-    SMTMapFresh -> "Map?"
-    SMTMapSet m f ma ->
-      pretty m <> brackets (pretty f) <+> "=" <+> pretty ma
-    SMTMapRef m f -> pretty m <> brackets (pretty f)
-
-data SMTExpr
-  = SMTModel BindingOrigin
-  | SMTProgram DLExpr
-  | SMTNoDef String
-  | SMTSynth SynthExpr
-  deriving (Eq)
-
-instance Pretty SMTExpr where
-  pretty = \case
-    SMTModel bo -> viaShow bo
-    SMTProgram de -> pretty de
-    SMTNoDef s -> pretty s
-    SMTSynth se -> pretty se
-
-instance Show SMTExpr where
-  show = \case
-    SMTProgram dl -> show . pretty $ dl
-    ow -> show ow
-
-data SMTLet
-  = SMTLet SrcLoc DLVar DLLetVar SMTCat SMTExpr
-  deriving (Eq, Show)
-
-instance Ord SMTLet where
-  compare (SMTLet _ ldv _ _ _) (SMTLet _ rdv _ _ _) = compare ldv rdv
-
-instance Pretty SMTLet where
-  pretty (SMTLet at dv _ _ se) =
-    "let" <+> pretty dv <+> "=" <+> pretty se <> hardline <>
-    "// bound at:" <+> pretty at
-
-data SMTTrace
-  = SMTTrace [SMTLet] TheoremKind DLVar
-  deriving (Eq, Show)
-
-instance Pretty SMTTrace where
-  pretty (SMTTrace lets tk dv) =
-    concatWith (surround hardline) (map pretty lets) <> hardline <>
-    pretty tk <> parens (pretty dv)
-
-data SMTVal
-  = SMV_Bool Bool
-  | SMV_Int Int
-  | SMV_Address SLPart
-  deriving (Eq)
-
 data Role
   = RoleContract
   | RolePart SLPart
@@ -176,42 +108,6 @@ instance Pretty VerifyMode where
     VM_Honest -> "ALL participants are honest"
     VM_Dishonest RoleContract -> "NO participants are honest"
     VM_Dishonest (RolePart p) -> "ONLY " <> pretty p <> " is honest"
-
-data BindingOrigin
-  = O_Join SLPart Bool
-  | O_Msg SLPart (Maybe DLArg)
-  | O_ClassJoin SLPart
-  | O_ToConsensus
-  | O_BuiltIn
-  | O_Var
-  | O_Interact
-  | O_Expr DLExpr
-  | O_Assignment
-  | O_SwitchCase SLVar
-  | O_ReduceVar
-  | O_Export
-  deriving (Eq)
-
-instance Show BindingOrigin where
-  show bo =
-    case bo of
-      O_Join who False -> "a dishonest join from " ++ sp who
-      O_Msg who Nothing -> "a dishonest message from " ++ sp who
-      O_Join who True -> "an honest join from " ++ sp who
-      O_Msg who (Just what) -> "an honest message from " ++ sp who ++ " of " ++ sp what
-      O_ClassJoin who -> "a join by a class member of " <> sp who
-      O_ToConsensus -> "a consensus transfer"
-      O_BuiltIn -> "builtin"
-      O_Var -> "function return"
-      O_Interact -> "interaction"
-      O_Expr e -> "evaluating " ++ sp e
-      O_Assignment -> "loop variable"
-      O_SwitchCase vn -> "switch case " <> vn
-      O_ReduceVar -> "map reduction"
-      O_Export -> "export"
-    where
-      sp :: Pretty a => a -> String
-      sp = show . pretty
 
 type SMTTypeInv = SExpr -> SExpr
 
@@ -457,19 +353,6 @@ smtDigestCombine at args =
     convert1 = smtArgBytes at
 
 --- Verifier
-
-data TheoremKind
-  = TClaim ClaimType
-  | TInvariant Bool
-  | TWhenNotUnknown
-  deriving (Eq, Show)
-
-instance Pretty TheoremKind where
-  pretty = \case
-    TClaim c -> pretty c
-    TInvariant False -> "while invariant before loop"
-    TInvariant True -> "while invariant after loop"
-    TWhenNotUnknown -> "when is not unknown"
 
 fmtAssert :: TheoremKind -> String
 fmtAssert = \case
@@ -757,7 +640,7 @@ display_fail :: SrcLoc -> [SLCtxtFrame] -> TheoremKind -> SExpr -> Maybe B.ByteS
 display_fail tat f tk tse mmsg repeated mrd dv = do
   lets <- (liftIO . readIORef) =<< asks ctxt_smt_trace
   let smtTrace = SMTTrace (S.toList lets) tk dv
-  liftIO $ putStrLn $ show $ pretty $ smtTrace
+  liftIO $ putStrLn $ "lets:\n" <> show (pretty smtTrace)
   let iputStrLn = liftIO . putStrLn
   cwd <- liftIO $ getCurrentDirectory
   iputStrLn $ "Verification failed:"
@@ -911,7 +794,7 @@ pathAddBound at_dv (Just dv) bo de se = do
   let DLVar _ _ t _ = dv
   v <- smtVar dv
   let mdv = Just dv
-  let smlet = (\ de' -> Just $ SMTLet at_dv dv (DLV_Let DVC_Once dv) Context (SMTProgram de')) =<< de
+  let smlet = Just . SMTLet at_dv dv (DLV_Let DVC_Once dv) Context . SMTProgram =<< de
   smtDeclare_v v t smlet
   --- Note: We don't use smtAssertCtxt because variables are global, so
   --- this variable isn't affected by the path.
@@ -1277,7 +1160,7 @@ smt_m :: DLStmt -> App ()
 smt_m = \case
   DL_Nop _ -> mempty
   DL_Let at lv de -> smt_e at (lv2mdv lv) de
-  DL_Var at dv -> pathAddUnbound at (Just dv) O_Var (Just $ SMTProgram $ DLE_Arg at $ DLA_Var dv)
+  DL_Var at dv -> pathAddUnbound at (Just dv) O_Var Nothing
   DL_ArrayMap {} ->
     --- FIXME: It might be possible to do this in Z3 by generating a function
     impossible "array_map"
@@ -1472,22 +1355,18 @@ smt_s = \case
                       return (((<>) ("pv_" <> f) . show) i, i)
                 (pv_net, pv_net_i) <- mki "net"
                 let pv_net' = Atom pv_net
-                (pv_ks, pv_ks_i) <- mki "ks"
+                (pv_ks, _) <- mki "ks"
                 let pv_ks' = Atom pv_ks
-                (pv_tok, pv_tok_i) <- mki "tok"
+                (pv_tok, _) <- mki "tok"
                 let pv_tok' = Atom pv_tok
                 smt <- ctxt_smt <$> ask
                 let pv_net_dv = DLVar at (Just (at, pv_net)) T_UInt pv_net_i
                 let pv_net_let = SMTLet at pv_net_dv (DLV_Let DVC_Once pv_net_dv) Context $ SMTProgram (DLE_Arg at pa_net)
                 smtDeclare smt pv_net (Atom "UInt") $ Just pv_net_let
                 smtTypeInv T_UInt $ pv_net'
-                let pv_tok_dv = DLVar at (Just (at, pv_tok)) T_Token pv_tok_i
-                let pv_tok_let = SMTLet at pv_tok_dv (DLV_Let DVC_Once pv_tok_dv) Context $ SMTNoDef "payAmt: tok"
-                smtDeclare smt pv_tok (Atom "Token") $ Just pv_tok_let
+                smtDeclare smt pv_tok (Atom "Token") Nothing
                 smtTypeInv T_Token $ pv_tok'
-                let pv_ks_dv = DLVar at (Just (at, pv_ks)) (T_Array (T_Tuple [T_Token, T_UInt]) $ fromIntegral $ length pv_ks) pv_ks_i
-                let pv_ks_let = SMTLet at pv_tok_dv (DLV_Let DVC_Once pv_ks_dv) Context $ SMTNoDef "payAmt: ks"
-                smtDeclare smt pv_ks (smtApply "Array" [Atom "Token", Atom "UInt"]) $ Just pv_ks_let
+                smtDeclare smt pv_ks (smtApply "Array" [Atom "Token", Atom "UInt"]) Nothing
                 smtTypeInv T_UInt $ smtApply "select" [pv_ks', pv_tok']
                 let one v a = smtAssert =<< (smtEq v <$> smt_a at a)
                 when should $ do

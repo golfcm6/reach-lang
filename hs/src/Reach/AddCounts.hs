@@ -1,4 +1,4 @@
-module Reach.AddCounts (add_counts, AC) where
+module Reach.AddCounts (add_counts, AC(..)) where
 
 import Control.Monad.Reader
 import Data.IORef
@@ -7,6 +7,7 @@ import Reach.AST.LL
 import Reach.AST.PL
 import Reach.CollectCounts
 import Reach.Util
+import Reach.Verify.SMTAst
 
 data Env = Env
   {e_cs :: IORef Counts}
@@ -286,6 +287,16 @@ instance AC LLStep where
 instance AC LLProg where
   ac (LLProg at llo ps dli dex vs s) =
     LLProg at llo ps dli <$> ac dex <*> pure vs <*> ac s
+
+instance AC SMTLet where
+  ac (SMTLet at dv x c se) = do
+    x' <- ac_vdef (canDupe se) x
+    case (isPure se, x') of
+      (True, DLV_Eff) -> return $ SMTNop at
+      _ -> do
+        ac_visit se
+        return $ SMTLet at dv x' c se
+  ac (SMTNop at) = return $ SMTNop at
 
 add_counts :: AC a => a -> IO a
 add_counts x = do

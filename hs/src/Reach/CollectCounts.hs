@@ -17,6 +17,7 @@ import Data.Maybe
 import qualified Data.Set as S
 import Reach.AST.DLBase
 import Reach.AST.PL
+import Reach.Verify.SMTAst
 
 newtype Count = Count (Maybe DLVarCat)
   deriving (Show, Eq)
@@ -155,6 +156,19 @@ instance {-# OVERLAPS #-} Countable a => Countable (DLinExportBlock a) where
 instance Countable DLBlock where
   counts = \case
     DLBlock _ _ t a -> countsk (counts a) t
+
+instance Countable SynthExpr where
+  counts = \case
+    SMTMapNew -> mempty
+    SMTMapFresh -> mempty
+    SMTMapSet m f ma -> counts m <> counts f <> counts ma
+    SMTMapRef m f -> counts m <> counts f
+
+instance Countable SMTExpr where
+  counts = \case
+    SMTModel {} -> mempty
+    SMTSynth s -> counts s
+    SMTProgram de -> counts de
 
 class CountableK a where
   countsk :: Counts -> a -> Counts
