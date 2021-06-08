@@ -97,12 +97,23 @@ data SMTCat
   | Context
   deriving (Eq, Show)
 
+instance Pretty SMTCat where
+  pretty = viaShow
+
 data SynthExpr
   = SMTMapNew                           -- Context
   | SMTMapFresh                         -- Witness
   | SMTMapSet DLVar DLVar (Maybe DLArg) -- Context
   | SMTMapRef DLVar DLVar               -- Context
   deriving (Eq, Show)
+
+instance Pretty SynthExpr where
+  pretty = \case
+    SMTMapNew -> "new Map()"
+    SMTMapFresh -> "Map?"
+    SMTMapSet m f ma ->
+      pretty m <> brackets (pretty f) <+> "=" <+> pretty ma
+    SMTMapRef m f -> pretty m <> brackets (pretty f)
 
 data SMTExpr
   = SMTModel BindingOrigin
@@ -111,13 +122,38 @@ data SMTExpr
   | SMTSynth SynthExpr
   deriving (Eq)
 
+instance Pretty SMTExpr where
+  pretty = \case
+    SMTModel bo -> viaShow bo
+    SMTProgram de -> pretty de
+    SMTNoDef s -> pretty s
+    SMTSynth se -> pretty se
+
+instance Show SMTExpr where
+  show = \case
+    SMTProgram dl -> show . pretty $ dl
+    ow -> show ow
+
 data SMTLet
   = SMTLet SrcLoc DLVar DLLetVar SMTCat SMTExpr
-  deriving (Eq)
+  deriving (Eq, Show)
+
+instance Ord SMTLet where
+  compare (SMTLet _ ldv _ _ _) (SMTLet _ rdv _ _ _) = compare ldv rdv
+
+instance Pretty SMTLet where
+  pretty (SMTLet at dv _ _ se) =
+    "let" <+> pretty dv <+> "=" <+> pretty se <> hardline <>
+    "// bound at:" <+> pretty at
 
 data SMTTrace
   = SMTTrace [SMTLet] TheoremKind DLVar
-  deriving (Eq)
+  deriving (Eq, Show)
+
+instance Pretty SMTTrace where
+  pretty (SMTTrace lets tk dv) =
+    concatWith (surround hardline) (map pretty lets) <> hardline <>
+    pretty tk <> parens (pretty dv)
 
 data SMTVal
   = SMV_Bool Bool
@@ -236,6 +272,7 @@ data SMTCtxt = SMTCtxt
   , ctxt_v_to_dv :: IORef (M.Map String [DLVar])
   , ctxt_inv_mode :: BlockMode
   , ctxt_pay_amt :: Maybe (SExpr, SExpr)
+  , ctxt_smt_trace :: IORef (S.Set SMTLet)
   }
 
 ctxt_mode :: App VerifyMode
@@ -324,8 +361,9 @@ smtTypeInv t se = do
 
 
 smtDeclare :: Solver -> String -> SExpr -> Maybe SMTLet -> App ()
-smtDeclare smt v s _l = do
-  -- add `l` to list in env
+smtDeclare smt v s ml = do
+  smt_trace_r <- asks ctxt_smt_trace
+  liftIO $ modifyIORef smt_trace_r (\ st -> maybe st (flip S.insert st) ml)
   liftIO $ void $ SMT.declare smt v s
 
 smtDeclare_v :: String -> DLType -> Maybe SMTLet -> App ()
@@ -424,7 +462,7 @@ data TheoremKind
   = TClaim ClaimType
   | TInvariant Bool
   | TWhenNotUnknown
-  deriving (Eq)
+  deriving (Eq, Show)
 
 instance Pretty TheoremKind where
   pretty = \case
@@ -715,8 +753,11 @@ format_thermodel tk pm tse = do
   iputStrLn theorem_formalization
   iputStrLn ""
 
-display_fail :: SrcLoc -> [SLCtxtFrame] -> TheoremKind -> SExpr -> Maybe B.ByteString -> Bool -> Maybe ResultDesc -> App ()
-display_fail tat f tk tse mmsg repeated mrd = do
+display_fail :: SrcLoc -> [SLCtxtFrame] -> TheoremKind -> SExpr -> Maybe B.ByteString -> Bool -> Maybe ResultDesc -> DLVar -> App ()
+display_fail tat f tk tse mmsg repeated mrd dv = do
+  lets <- (liftIO . readIORef) =<< asks ctxt_smt_trace
+  let smtTrace = SMTTrace (S.toList lets) tk dv
+  liftIO $ putStrLn $ show $ pretty $ smtTrace
   let iputStrLn = liftIO . putStrLn
   cwd <- liftIO $ getCurrentDirectory
   iputStrLn $ "Verification failed:"
@@ -825,13 +866,24 @@ verify1 at mf tk se mmsg = smtNewScope $ do
       mm <- mgetm
       dr <- ctxt_displayed <$> ask
       dspd <- liftIO $ readIORef dr
-      display_fail at mf tk se mmsg (elem se dspd) mm
+      mdv <- getDvFromSexpr se
+      case mdv of
+        Nothing -> return ()
+        Just dv -> display_fail at mf tk se mmsg (elem se dspd) mm dv
       liftIO $ modifyIORef dr $ S.insert se
       void $ (liftIO . incCounter . vst_res_fail) =<< (ctxt_vst <$> ask)
     isPossible =
       case tk of
         TClaim CT_Possible -> True
         _ -> False
+
+getDvFromSexpr :: SExpr -> App (Maybe DLVar)
+getDvFromSexpr (Atom sv) = do
+  bindings <- (liftIO . readIORef) =<< asks ctxt_bindingsr
+  case M.lookup sv bindings of
+    Just (BR_Var (Just dv) _ _ _ _) -> return $ Just dv
+    _ -> return Nothing
+getDvFromSexpr _ = impossible "getDvFromSexpr: Not Atom"
 
 smtRecordBinding :: String -> BindingInfo -> App ()
 smtRecordBinding v bi = do
@@ -853,13 +905,13 @@ pathAddUnbound at_dv (Just dv) bo msmte = do
   let smlet = Just . SMTLet at_dv dv (DLV_Let DVC_Once dv) Context =<< msmte
   pathAddUnbound_v (Just dv) at_dv v t bo smlet
 
-pathAddBound :: SrcLoc -> Maybe DLVar -> BindingOrigin -> Maybe DLExpr -> SExpr -> Maybe SMTExpr -> App ()
-pathAddBound _ Nothing _ _ _ _ = mempty
-pathAddBound at_dv (Just dv) bo de se msmte = do
+pathAddBound :: SrcLoc -> Maybe DLVar -> BindingOrigin -> Maybe DLExpr -> SExpr-> App ()
+pathAddBound _ Nothing _ _ _ = mempty
+pathAddBound at_dv (Just dv) bo de se = do
   let DLVar _ _ t _ = dv
   v <- smtVar dv
   let mdv = Just dv
-  let smlet = (Just . SMTLet at_dv dv (DLV_Let DVC_Once dv) Context) =<< msmte
+  let smlet = (\ de' -> Just $ SMTLet at_dv dv (DLV_Let DVC_Once dv) Context (SMTProgram de')) =<< de
   smtDeclare_v v t smlet
   --- Note: We don't use smtAssertCtxt because variables are global, so
   --- this variable isn't affected by the path.
@@ -1159,7 +1211,7 @@ smt_e at_dv mdv de = do
       unbound at
   where
     bo = O_Expr de
-    bound at se = pathAddBound at mdv bo (Just de) se (Just $ SMTProgram de)
+    bound at se = pathAddBound at mdv bo (Just de) se
     unbound at = pathAddUnbound at mdv bo (Just $ SMTProgram de)
     doClaim at f ct ca' mmsg = do
       let check_m = verify1 at f (TClaim ct) ca' mmsg
@@ -1401,7 +1453,7 @@ smt_s = \case
                 let smte = Just . SMTProgram =<< mde
                 case should of
                   False -> pathAddUnbound at (Just v) bo_no smte
-                  True -> pathAddBound at (Just v) bo_yes mde se smte
+                  True -> pathAddBound at (Just v) bo_yes mde se
           let bind_from =
                 case isClass of
                   True ->
@@ -1410,7 +1462,7 @@ smt_s = \case
                         pathAddUnbound at (Just whov) (O_ClassJoin from) Nothing
                       True -> do
                         from' <- smtCurrentAddress from
-                        pathAddBound at (Just whov) (O_Join from True) Nothing (Atom $ from') Nothing
+                        pathAddBound at (Just whov) (O_Join from True) Nothing (Atom $ from')
                   _ -> maybe_pathAdd whov (O_Join from False) (O_Join from True) Nothing (Atom $ smtAddress from)
           let bind_msg = zipWithM_ (\dv da -> maybe_pathAdd dv (O_Msg from Nothing) (O_Msg from $ Just da) (Just $ DLE_Arg at da) =<< (smt_a at da)) msgvs msgas
           let bind_amt m = do
@@ -1637,6 +1689,7 @@ _verify_smt mc ctxt_vst smt lp = do
   let ctxt_smt = smt
   let ctxt_idx = llo_counter
   let ctxt_pay_amt = Nothing
+  ctxt_smt_trace <- newIORef mempty
   flip runReaderT (SMTCtxt {..}) $ do
     let defineMap (mpv, SMTMapInfo {..}) = do
           mi <- liftIO $ incCounter sm_c
