@@ -138,7 +138,7 @@ instance Ord SMTLet where
 
 instance Pretty SMTLet where
   pretty (SMTLet _at dv _ _ se) =
-    "let" <+> viaShow dv <+> "=" <+> pretty se -- <> hardline <>
+    "  const" <+> viaShow dv <+> "=" <+> pretty se <> ";" -- <> hardline <>
     -- "// bound at:" <+> pretty at
   pretty (SMTNop _) = ""
 
@@ -149,7 +149,7 @@ data SMTTrace
 instance Pretty SMTTrace where
   pretty (SMTTrace lets tk dv) =
     concatWith (surround hardline) (map pretty lets) <> hardline <>
-    pretty tk <> parens (pretty dv)
+    "  " <> pretty tk <> parens (pretty dv) <> ";" <> hardline
 
 data SMTVal
   = SMV_Bool Bool

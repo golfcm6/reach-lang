@@ -35,6 +35,7 @@ import System.Directory
 import System.Exit
 import System.IO
 import Reach.Verify.SMTAst
+import Reach.AddCounts (add_counts)
 
 --- SMT Helpers
 
@@ -641,6 +642,8 @@ display_fail tat f tk tse mmsg repeated mrd dv = do
   lets <- (liftIO . readIORef) =<< asks ctxt_smt_trace
   let smtTrace = SMTTrace (S.toList lets) tk dv
   liftIO $ putStrLn $ "lets:\n" <> show (pretty smtTrace)
+  smtTrace' <- liftIO $ add_counts smtTrace
+  liftIO $ putStrLn $ "lets':\n" <> show (pretty smtTrace')
   let iputStrLn = liftIO . putStrLn
   cwd <- liftIO $ getCurrentDirectory
   iputStrLn $ "Verification failed:"

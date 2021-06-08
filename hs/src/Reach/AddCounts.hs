@@ -298,6 +298,16 @@ instance AC SMTLet where
         return $ SMTLet at dv x' c se
   ac (SMTNop at) = return $ SMTNop at
 
+instance AC SMTTrace where
+  ac (SMTTrace lets tk dv) = do
+    ac_visit dv
+    lets' <- ac $ reverse lets
+    return $ SMTTrace (reverse $ filter dropNop lets') tk dv
+    where
+      dropNop = \case
+        SMTNop _ -> False
+        _ -> True
+
 add_counts :: AC a => a -> IO a
 add_counts x = do
   e_cs <- newIORef $ mempty
