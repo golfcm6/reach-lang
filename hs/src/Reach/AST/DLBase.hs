@@ -240,9 +240,8 @@ instance Pretty DLArg where
 
 instance PrettySubst DLArg where
   prettySubst a = do
-    env <- ask
     return $ case a of
-      DLA_Var v -> fromMaybe (pretty v) $ M.lookup v env
+      DLA_Var v -> pretty v -- fromMaybe (pretty v) $ M.lookup v env
       DLA_Constant c -> pretty c
       DLA_Literal c -> pretty c
       DLA_Interact who m t ->

@@ -5,13 +5,19 @@ module Reach.Verify.SMTAst (
   SMTLet(..),
   SMTExpr(..),
   SynthExpr(..),
-  SMTCat(..)) where
+  SMTCat(..),
+  SMTVal(..)) where
 
 import Reach.AST.Base
 import Reach.AST.DLBase
 import Reach.Texty
 import Reach.AddCounts
 import Reach.CollectCounts
+import qualified Data.ByteString as B
+import Control.Monad.Identity
+import Control.Monad.Reader
+import qualified Data.Map as M
+import Data.Maybe (fromMaybe)
 
 
 data BindingOrigin
@@ -94,13 +100,19 @@ data SynthExpr
   | SMTMapRef DLVar DLVar               -- Context
   deriving (Eq, Show)
 
-instance Pretty SynthExpr where
-  pretty = \case
-    SMTMapNew -> "new Map()"
-    SMTMapFresh -> "Map?"
-    SMTMapSet m f ma ->
-      pretty m <> brackets (pretty f) <+> "=" <+> pretty ma
-    SMTMapRef m f -> pretty m <> brackets (pretty f)
+instance PrettySubst SynthExpr where
+  prettySubst = \case
+    SMTMapNew -> return "new Map()"
+    SMTMapFresh -> return "Map?"
+    SMTMapSet m f ma -> do
+      m' <- prettySubst $ DLA_Var m
+      f' <- prettySubst f
+      ma' <- prettySubst ma
+      return $ m' <> brackets f' <+> "=" <+> ma'
+    SMTMapRef m f -> do
+      m' <- prettySubst $ DLA_Var m
+      f' <- prettySubst $ DLA_Var f
+      return $ m' <> brackets f'
 
 data SMTExpr
   = SMTModel BindingOrigin
@@ -108,11 +120,11 @@ data SMTExpr
   | SMTSynth SynthExpr
   deriving (Eq)
 
-instance Pretty SMTExpr where
-  pretty = \case
-    SMTModel bo -> viaShow bo
-    SMTProgram de -> pretty de
-    SMTSynth se -> pretty se
+instance PrettySubst SMTExpr where
+  prettySubst = \case
+    SMTModel bo -> return $ viaShow bo
+    SMTProgram de -> prettySubst de
+    SMTSynth se -> prettySubst se
 
 instance Show SMTExpr where
   show = \case
@@ -138,27 +150,46 @@ instance Ord SMTLet where
   compare (SMTLet _ ldv _ _ _) (SMTLet _ rdv _ _ _) = compare ldv rdv
   compare _ _ = LT
 
-instance Pretty SMTLet where
-  pretty (SMTLet _at dv _ _ se) =
-    "  const" <+> viaShow dv <+> "=" <+> pretty se <> ";" -- <> hardline <>
-    -- "// bound at:" <+> pretty at
-  pretty (SMTNop _) = ""
+instance PrettySubst SMTLet where
+  prettySubst = \case
+    SMTLet _at dv _ _ se -> do
+      se' <- prettySubst se
+      env <- ask
+      let wouldBe = fromMaybe "" (M.lookup dv env)
+      return $ "  const" <+> viaShow dv <+> "=" <+> se' <> ";" <> hardline <>
+        "  // would be " <> viaShow wouldBe
+      -- "// bound at:" <+> pretty at
+    SMTNop _ -> return ""
 
 data SMTTrace
   = SMTTrace [SMTLet] TheoremKind DLVar
   deriving (Eq, Show)
 
 instance Pretty SMTTrace where
-  pretty (SMTTrace lets tk dv) =
-    concatWith (surround hardline) (map pretty lets) <> hardline <>
-    "  " <> pretty tk <> parens (pretty dv) <> ";" <> hardline
+  pretty = runIdentity . flip runReaderT mempty . prettySubst
+
+instance PrettySubst SMTTrace where
+  prettySubst (SMTTrace lets tk dv) = do
+    lets' <- mapM prettySubst lets
+    return $
+      concatWith (surround hardline) lets' <> hardline <>
+      "  " <> pretty tk <> parens (pretty dv) <> ";" <> hardline
 
 data SMTVal
   = SMV_Bool Bool
   | SMV_Int Int
   | SMV_Address SLPart
-  deriving (Eq)
+  | SMV_Null
+  | SMV_Bytes B.ByteString
+  deriving (Eq, Show)
 
+instance Pretty SMTVal where
+  pretty = \case
+    SMV_Bool b -> pretty b
+    SMV_Int i -> pretty i
+    SMV_Address p -> pretty p
+    SMV_Null -> "null"
+    SMV_Bytes b -> pretty b
 
 instance Countable SynthExpr where
   counts = \case
