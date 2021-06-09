@@ -10,6 +10,8 @@ module Reach.Verify.SMTAst (
 import Reach.AST.Base
 import Reach.AST.DLBase
 import Reach.Texty
+import Reach.AddCounts
+import Reach.CollectCounts
 
 
 data BindingOrigin
@@ -88,7 +90,7 @@ instance Pretty SMTCat where
 data SynthExpr
   = SMTMapNew                           -- Context
   | SMTMapFresh                         -- Witness
-  | SMTMapSet DLVar DLVar (Maybe DLArg) -- Context
+  | SMTMapSet DLVar DLArg (Maybe DLArg) -- Context
   | SMTMapRef DLVar DLVar               -- Context
   deriving (Eq, Show)
 
@@ -157,3 +159,37 @@ data SMTVal
   | SMV_Address SLPart
   deriving (Eq)
 
+
+instance Countable SynthExpr where
+  counts = \case
+    SMTMapNew -> mempty
+    SMTMapFresh -> mempty
+    SMTMapSet m f ma -> counts m <> counts f <> counts ma
+    SMTMapRef m f -> counts m <> counts f
+
+instance Countable SMTExpr where
+  counts = \case
+    SMTModel {} -> mempty
+    SMTSynth s -> counts s
+    SMTProgram de -> counts de
+
+instance AC SMTLet where
+  ac = \case
+    SMTLet at dv x c se -> do
+      x' <- ac_vdef (canDupe se) x
+      case (isPure se, x') of
+        (True, DLV_Eff) -> return $ SMTNop at
+        _ -> do
+          ac_visit se
+          return $ SMTLet at dv x' c se
+    SMTNop at -> return $ SMTNop at
+
+instance AC SMTTrace where
+  ac (SMTTrace lets tk dv) = do
+    ac_visit dv
+    lets' <- ac $ reverse lets
+    return $ SMTTrace (reverse $ filter dropNop lets') tk dv
+    where
+      dropNop = \case
+        SMTNop _ -> False
+        _ -> True
