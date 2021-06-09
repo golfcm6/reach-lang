@@ -374,12 +374,19 @@ set_to_seq = Seq.fromList . S.toList
 format_thermodel :: TheoremKind -> SMTModel -> SExpr -> App ()
 format_thermodel _tk _pm tse = do
   let iputStrLn = liftIO . putStrLn
+  _cwd <- liftIO $ getCurrentDirectory
   iputStrLn $ "  // Violation witness"
   let show_vars :: (S.Set String) -> (Seq.Seq String) -> App ()
       show_vars shown = \case
         Seq.Empty -> return ()
         (_v0 Seq.:<| q') -> do
           v0vars <- return mempty
+            -- case M.lookup v0 pm of
+            --   Nothing ->
+            --     return $ mempty
+            --   Just (_ty, se) -> do
+            --     mapM_ iputStrLn (["const " <> show v0 <> " = " <> show se])
+            --     return $ seVars se
           let nvars = S.difference v0vars shown
           let shown' = S.union shown nvars
           let new_q = set_to_seq nvars
@@ -395,9 +402,11 @@ display_fail :: SrcLoc -> [SLCtxtFrame] -> TheoremKind -> SExpr -> Maybe B.ByteS
 display_fail tat f tk tse mmsg repeated mrd dv = do
   lets <- (liftIO . readIORef) =<< asks ctxt_smt_trace
   let smtTrace = SMTTrace (S.toList lets) tk dv
-  liftIO $ putStrLn $ "lets:\n" <> show (pretty smtTrace)
+  -- liftIO $ putStrLn $ "lets:\n" <> show (pretty smtTrace)
   smtTrace' <- liftIO $ add_counts smtTrace
   liftIO $ putStrLn $ "lets':\n" <> show (pretty smtTrace')
+  -- let smtTrace'' = pretty_subst mempty smtTrace'
+  -- liftIO $ putStrLn $ "lets'':\n" <> show smtTrace''
   let iputStrLn = liftIO . putStrLn
   cwd <- liftIO $ getCurrentDirectory
   iputStrLn $ "Verification failed:"
@@ -525,8 +534,8 @@ verify1 at mf tk se mmsg = smtNewScope $ do
 pathAddUnbound_v :: Maybe DLVar -> SrcLoc -> String -> DLType -> BindingOrigin -> Maybe SMTLet -> App ()
 pathAddUnbound_v mdv at_dv v t bo ml = do
   let l = case (ml, mdv) of
-            (Nothing, Just dv) -> Just $ SMTLet at_dv dv (DLV_Let DVC_Once dv) Context (SMTModel bo)
-            (ow, _) -> ow
+        (Nothing, Just dv) -> Just $ SMTLet at_dv dv (DLV_Let DVC_Once dv) Context (SMTModel bo)
+        (ow, _) -> ow
   smtDeclare_v v t l
 
 pathAddUnbound :: SrcLoc -> Maybe DLVar -> BindingOrigin -> Maybe SMTExpr -> App ()
