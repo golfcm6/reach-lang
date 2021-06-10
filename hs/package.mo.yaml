@@ -7,6 +7,9 @@ maintainer:          "jay@reach.sh"
 copyright:           "2019 Reach"
 description:         Please visit the GitHub repository <https://github.com/reach-sh/reach-lang#readme>
 
+extra-source-files:
+- app/reach/embed/**/*
+
 dependencies:
 - aeson
 - aeson-pretty
@@ -63,6 +66,7 @@ dependencies:
 - tasty-hunit
 - tasty-quickcheck
 - tasty-smallcheck
+- template-haskell
 - temporary
 - text
 - time
@@ -133,7 +137,7 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - neat-interpolation
+    - file-embed
     - shell-monad
     - unix
     - reach
