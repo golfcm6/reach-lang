@@ -243,7 +243,7 @@ instance Pretty DLArg where
 instance PrettySubst DLArg where
   prettySubst a = do
     case a of
-      DLA_Var v -> return $ pretty v -- fromMaybe (pretty v) $ M.lookup v env
+      DLA_Var v -> return $ viaShow v
       DLA_Constant c -> return $ pretty c
       DLA_Literal c -> return $ pretty c
       DLA_Interact who m t ->

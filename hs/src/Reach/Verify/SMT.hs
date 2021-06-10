@@ -10,7 +10,7 @@ import Data.Foldable
 import Data.IORef
 import Data.List.Extra (mconcatMap)
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe, isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as S
 import qualified Data.Text as T
@@ -378,28 +378,6 @@ sv2dv v = do
     Just (_:dv:_) -> return $ Just dv
     _ -> return Nothing
 
-format_thermodel :: TheoremKind -> M.Map DLVar SMTVal -> SExpr -> SMTTrace -> App ()
-format_thermodel _tk pm tse smtTrace = do
-  let iputStrLn = liftIO . putStrLn
-  _cwd <- liftIO $ getCurrentDirectory
-  iputStrLn $ "  // Violation witness"
-  let show_vars :: (S.Set String) -> (Seq.Seq String) -> App ()
-      show_vars shown = \case
-        Seq.Empty -> return ()
-        (_v0 Seq.:<| q') -> do
-          v0vars <- return mempty
-          let nvars = S.difference v0vars shown
-          let shown' = S.union shown nvars
-          let new_q = set_to_seq nvars
-          let q'' = q' <> new_q
-          show_vars shown' q''
-  let tse_vars = seVars tse
-  show_vars tse_vars $ set_to_seq $ tse_vars
-  iputStrLn ""
-  iputStrLn $ "  // Theorem formalization"
-  iputStrLn $ show $ showTrace pm smtTrace
-  iputStrLn ""
-
 parseType :: SExpr -> App DLType
 parseType = \case
     Atom "Token" -> return $ T_Token
@@ -412,6 +390,7 @@ parseType = \case
     List (Atom "Array":rs) -> do
       rs' <- mapM parseType rs
       return $ T_Array (T_Tuple rs') (fromIntegral $ length rs)
+    -- xxx parse tuples
     ow -> impossible $ "parseType: " <> show ow
 
 parseVal :: DLType -> SExpr -> App SMTVal
@@ -470,21 +449,21 @@ showTrace pm st = do
   let pm' = M.map pretty pm
   pretty_subst pm' st
 
-display_fail :: SrcLoc -> [SLCtxtFrame] -> TheoremKind -> SExpr -> Maybe B.ByteString -> Bool -> Maybe ResultDesc -> DLVar -> App ()
-display_fail tat f tk tse mmsg repeated mrd dv = do
-  lets <- (liftIO . readIORef) =<< asks ctxt_smt_trace
-  let smtTrace = SMTTrace (S.toList lets) tk dv
-  -- liftIO $ putStrLn $ "lets:\n" <> show (pretty smtTrace)
-  smtTrace' <- liftIO $ add_counts smtTrace
-  -- liftIO $ putStrLn $ "lets':\n" <> show (pretty smtTrace')
-  -- let smtTrace'' = pretty_subst mempty smtTrace'
-  -- liftIO $ putStrLn $ "lets'':\n" <> show smtTrace''
-  let pm = case mrd of
-        Nothing -> mempty
-        --- FIXME Do something useful here
-        Just (RD_UnsatCore _uc) -> mempty
-        Just (RD_Model m) -> parseModel m
-  pm2 <- parseModel2 pm
+-- Attempt to retrieve binding info for any DLVar's that do not have it
+recoverBindingInfo :: SMTLet -> App SMTLet
+recoverBindingInfo = \case
+  ow@(SMTLet at (DLVar _ Nothing _ i) lv c e) -> do
+    v2dv <- (liftIO . readIORef) =<< asks ctxt_v_to_dv
+    let hasBindingInfo (DLVar _ mb _ _) = isJust mb
+    let sVar = "v" <> show i
+    let dvs = maybe [] (reverse . filter hasBindingInfo) $ M.lookup sVar v2dv
+    case dvs of
+      (dv:_) -> return $ SMTLet at dv lv c e
+      _ -> return ow
+  ow -> return ow
+
+display_fail :: SrcLoc -> [SLCtxtFrame] -> TheoremKind -> Maybe B.ByteString -> Bool -> Maybe ResultDesc -> Maybe DLVar -> App ()
+display_fail tat f tk mmsg repeated mrd mdv = do
   let iputStrLn = liftIO . putStrLn
   cwd <- liftIO $ getCurrentDirectory
   iputStrLn $ "Verification failed:"
@@ -507,7 +486,21 @@ display_fail tat f tk tse mmsg repeated mrd dv = do
       --- substitute everything that came from the program (the "context"
       --- below) and then just show the remaining variables found by the
       --- model.
-      format_thermodel tk pm2 tse smtTrace'
+      case mdv of
+        Nothing -> do
+          iputStrLn $ show $ "  " <> pretty tk <> parens "false" <> ";" <> hardline
+        Just dv -> do
+          lets <- (liftIO . readIORef) =<< asks ctxt_smt_trace
+          lets' <- mapM recoverBindingInfo $ S.toList lets
+          let smtTrace = SMTTrace lets' tk dv
+          smtTrace' <- liftIO $ add_counts smtTrace
+          let pm = case mrd of
+                Nothing -> mempty
+                --- FIXME Do something useful here
+                Just (RD_UnsatCore _uc) -> mempty
+                Just (RD_Model m) -> parseModel m
+          pm2 <- parseModel2 pm
+          iputStrLn $ show $ showTrace pm2 smtTrace'
 
 -- format_thermodel2 tk pm tse
 
@@ -587,9 +580,8 @@ verify1 at mf tk se mmsg = smtNewScope $ do
       let sv = case se of
                 Atom id' -> id'
                 _ -> impossible "verify1: expected atom"
-      sv2dv sv >>= \case
-        Just dv -> display_fail at mf tk se mmsg (elem se dspd) mm dv
-        Nothing  -> return ()
+      mdv <- sv2dv sv
+      display_fail at mf tk mmsg (elem se dspd) mm mdv
       liftIO $ modifyIORef dr $ S.insert se
       void $ (liftIO . incCounter . vst_res_fail) =<< (ctxt_vst <$> ask)
     isPossible =

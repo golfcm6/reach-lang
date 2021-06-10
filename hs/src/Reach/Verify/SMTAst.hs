@@ -17,7 +17,7 @@ import qualified Data.ByteString as B
 import Control.Monad.Identity
 import Control.Monad.Reader
 import qualified Data.Map as M
-import Data.Maybe (fromMaybe)
+import Data.List (partition)
 
 
 data BindingOrigin
@@ -152,13 +152,18 @@ instance Ord SMTLet where
 
 instance PrettySubst SMTLet where
   prettySubst = \case
-    SMTLet _at dv _ _ se -> do
+    SMTLet _ dv _ Context se -> do
       se' <- prettySubst se
       env <- ask
-      let wouldBe = fromMaybe "" (M.lookup dv env)
-      return $ "  const" <+> viaShow dv <+> "=" <+> se' <> ";" <> hardline <>
-        "  // would be " <> viaShow wouldBe
-      -- "// bound at:" <+> pretty at
+      let wouldBe x = "  //    ^ would be " <> viaShow x
+      let info = maybe "" wouldBe (M.lookup dv env)
+      return $ "  const" <+> viaShow dv <+> "=" <+> se' <> ";" <> hardline <> info
+    SMTLet at dv _ Witness se -> do
+      env <- ask
+      se' <- prettySubst se
+      let wouldBe x = "  //    ^ could = " <> x <> hardline <> "          from:" <+> pretty at
+      let info = maybe "" wouldBe (M.lookup dv env)
+      return $ "  const" <+> viaShow dv <+> "=" <+> se' <> ";" <> hardline <> info
     SMTNop _ -> return ""
 
 data SMTTrace
@@ -170,10 +175,25 @@ instance Pretty SMTTrace where
 
 instance PrettySubst SMTTrace where
   prettySubst (SMTTrace lets tk dv) = do
-    lets' <- mapM prettySubst lets
+    let (inlinable, others) = partition isWitness lets
+    inlinable' <- mapM (prettySubst . toWitness) inlinable
+    lets' <- mapM prettySubst others
     return $
+      "  // Violation Witness" <> hardline <> hardline <>
+      concatWith (surround hardline) inlinable' <> hardline <> hardline <>
+      "  // Theorem Formalization" <> hardline <> hardline <>
       concatWith (surround hardline) lets' <> hardline <>
       "  " <> pretty tk <> parens (pretty dv) <> ";" <> hardline
+    where
+      -- xxx nail down how to get witness variables
+      isWitness = \case
+        SMTLet _ _ _ _ (SMTProgram (DLE_Arg _ DLA_Var {})) -> False
+        SMTLet _ _ _ _ (SMTProgram DLE_Arg {}) -> True
+        SMTLet _ _ _ _ (SMTProgram e) -> not $ isPure e
+        _ -> False
+      toWitness = \case
+        SMTLet a b c _ e -> SMTLet a b c Witness e
+        ow -> ow
 
 data SMTVal
   = SMV_Bool Bool
