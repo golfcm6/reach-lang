@@ -417,23 +417,37 @@ parseType = \case
 parseVal :: DLType -> SExpr -> App SMTVal
 parseVal t v =
   case t of
-    T_Bool -> return $ SMV_Bool (v == Atom "true")
+    T_Bool -> do
+      return $ SMV_Bool (v == Atom "true")
     T_Null -> return $ SMV_Null
     T_UInt ->
       case v of
         Atom i -> return $ SMV_Int (read i :: Int)
-        _ -> impossible "parseVal: UInt"
+        _ -> impossible $ "parseVal: UInt: " <> show v
     T_Address -> do
       case v of
         Atom i -> return $ SMV_Address $ B.pack i
-        _ -> impossible "parseVal: Address"
+        _ -> impossible $ "parseVal: Address: " <> show v
     T_Bytes _ -> do
       case v of
         Atom i -> return $ SMV_Bytes $ B.pack i
-        _ -> impossible "parseVal: Bytes"
+        _ -> impossible $ "parseVal: Bytes: " <> show v
     T_Array (T_Tuple [T_Token, T_UInt]) _ ->
       -- XXX This is a Map
       return $ SMV_Null
+    T_Array (T_Tuple [T_UInt, ty]) _ ->
+      case v of
+        List (_:elems) -> do
+          let parseVals = \case
+                List (Atom "store":this) -> parseVals (List this)
+                List [rst, _, x] -> do
+                  el <- parseVal ty x
+                  rs <- parseVals rst
+                  return $ el : rs
+                _ -> return []
+          elems' <- parseVals (List elems)
+          return $ SMV_Array ty $ reverse elems'
+        _ -> impossible $ "parseVal: Array(" <> show ty <> ")"
     _ -> impossible $ "parseVal: " <> show t <> " " <> show v
 
 

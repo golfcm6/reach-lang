@@ -17,10 +17,12 @@ import Control.Monad.Identity
 import Control.Monad.Reader
 import Data.Functor ((<&>))
 
-type PrettyT = ReaderT (M.Map DLVar Doc) Identity
+type PrettySubstEnv = M.Map DLVar Doc
+
+type PrettySubstApp = ReaderT PrettySubstEnv Identity
 
 class PrettySubst a where
-  prettySubst :: a -> PrettyT Doc
+  prettySubst :: a -> PrettySubstApp Doc
 
 data DeployMode
   = DM_constructor
@@ -240,12 +242,12 @@ instance Pretty DLArg where
 
 instance PrettySubst DLArg where
   prettySubst a = do
-    return $ case a of
-      DLA_Var v -> pretty v -- fromMaybe (pretty v) $ M.lookup v env
-      DLA_Constant c -> pretty c
-      DLA_Literal c -> pretty c
+    case a of
+      DLA_Var v -> return $ pretty v -- fromMaybe (pretty v) $ M.lookup v env
+      DLA_Constant c -> return $ pretty c
+      DLA_Literal c -> return $ pretty c
       DLA_Interact who m t ->
-        "interact(" <> render_sp who <> ")." <> viaShow m <> parens (pretty t)
+        return $ "interact(" <> render_sp who <> ")." <> viaShow m <> parens (pretty t)
 
 class CanDupe a where
   canDupe :: a -> Bool
@@ -272,13 +274,13 @@ data DLLargeArg
   | DLLA_Struct [(SLVar, DLArg)]
   deriving (Eq, Ord, Generic, Show)
 
-render_dasM :: PrettySubst a => [a] -> PrettyT Doc
+render_dasM :: PrettySubst a => [a] -> PrettySubstApp Doc
 render_dasM as = do
   as' <- mapM prettySubst as
   return $ hsep $ punctuate comma as'
 
 
-render_objM :: Pretty k => PrettySubst v => M.Map k v -> PrettyT Doc
+render_objM :: Pretty k => PrettySubst v => M.Map k v -> PrettySubstApp Doc
 render_objM env = do
   ps <- mapM render_p $ M.toAscList env
   return $ braces $ nest 2 $ hardline <> (concatWith (surround (comma <> hardline)) ps)
@@ -301,7 +303,9 @@ instance Pretty DLLargeArg where
 
 instance PrettySubst DLLargeArg where
   prettySubst = \case
-    DLLA_Array t as -> return $ "array" <> parens (pretty t <> comma <+> pretty (DLLA_Tuple as))
+    DLLA_Array t as -> do
+      t' <- prettySubst (DLLA_Tuple as)
+      return $ "array" <> parens (pretty t <> comma <+> t')
     DLLA_Tuple as -> render_dasM as <&> brackets
     DLLA_Obj env -> render_objM env
     DLLA_Data _ vn vv -> return $ "<" <> pretty vn <> " " <> pretty vv <> ">"
@@ -425,13 +429,13 @@ data DLExpr
   | DLE_Remote SrcLoc [SLCtxtFrame] DLArg String DLPayAmt [DLArg] DLWithBill
   deriving (Eq, Ord, Generic)
 
-prettyClaim :: (PrettySubst a1, Show a2, Show a3) => a2 -> a1 -> a3 -> PrettyT Doc
+prettyClaim :: (PrettySubst a1, Show a2, Show a3) => a2 -> a1 -> a3 -> PrettySubstApp Doc
 prettyClaim ct a m = do
   a' <- prettySubst a
   return $ "claim" <> parens (viaShow ct) <> parens (a' <> comma <+> viaShow m)
 
--- prettyTransfer :: Pretty a => a -> a -> Maybe a -> PrettyT Doc
-prettyTransfer :: (PrettySubst a1, PrettySubst a2, PrettySubst a3) => a1 -> a2 -> a3 -> PrettyT Doc
+-- prettyTransfer :: Pretty a => a -> a -> Maybe a -> PrettySubstApp Doc
+prettyTransfer :: (PrettySubst a1, PrettySubst a2, PrettySubst a3) => a1 -> a2 -> a3 -> PrettySubstApp Doc
 prettyTransfer who da mta = do
   who' <- prettySubst who
   da' <- prettySubst da
@@ -528,7 +532,7 @@ instance PrettySubst DLExpr where
         <> ".withBill"
         <> parens nn'
 
-pretty_subst :: PrettySubst a => M.Map DLVar Doc -> a -> Doc
+pretty_subst :: PrettySubst a => PrettySubstEnv -> a -> Doc
 pretty_subst e x =
   runIdentity $ flip runReaderT e $ prettySubst x
 

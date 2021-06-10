@@ -181,15 +181,17 @@ data SMTVal
   | SMV_Address SLPart
   | SMV_Null
   | SMV_Bytes B.ByteString
+  | SMV_Array DLType [SMTVal]
   deriving (Eq, Show)
 
 instance Pretty SMTVal where
   pretty = \case
-    SMV_Bool b -> pretty b
+    SMV_Bool b -> pretty $ DLL_Bool b
     SMV_Int i -> pretty i
     SMV_Address p -> pretty p
     SMV_Null -> "null"
     SMV_Bytes b -> pretty b
+    SMV_Array t xs -> "array" <> parens (hsep $ punctuate comma [pretty t, brackets $ hsep $ punctuate comma $ map pretty xs])
 
 instance Countable SynthExpr where
   counts = \case
